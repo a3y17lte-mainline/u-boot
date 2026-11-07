@@ -247,20 +247,13 @@ static int exynos_blk_env_setup(void)
 	return 0;
 }
 
-static int exynos_fastboot_setup(void)
+#if IS_ENABLED(CONFIG_FASTBOOT_FLASH_MMC)
+static int exynos_fastboot_alias_setup(void)
 {
 	struct blk_desc *blk_dev;
 	struct disk_partition info = {0};
 	char buf[128];
-	phys_addr_t addr;
 	int offset, i, j;
-
-	/* Allocate and define buffer address for fastboot interface. */
-	if (lmb_alloc(CONFIG_FASTBOOT_BUF_SIZE, &addr)) {
-		log_err("%s: failed to allocate fastboot buffer\n", __func__);
-		return -ENOMEM;
-	}
-	env_set_hex("fastboot_addr_r", addr);
 
 	blk_dev = blk_get_dev("mmc", CONFIG_FASTBOOT_FLASH_MMC_DEV);
 	if (!blk_dev) {
@@ -292,6 +285,27 @@ static int exynos_fastboot_setup(void)
 	}
 
 	return 0;
+}
+#else
+/* Without eMMC flashing support there are no partitions to alias. */
+static int exynos_fastboot_alias_setup(void)
+{
+	return 0;
+}
+#endif
+
+static int exynos_fastboot_setup(void)
+{
+	phys_addr_t addr;
+
+	/* Allocate and define buffer address for fastboot interface. */
+	if (lmb_alloc(CONFIG_FASTBOOT_BUF_SIZE, &addr)) {
+		log_err("%s: failed to allocate fastboot buffer\n", __func__);
+		return -ENOMEM;
+	}
+	env_set_hex("fastboot_addr_r", addr);
+
+	return exynos_fastboot_alias_setup();
 }
 
 int board_fdt_blob_setup(void **fdtp)
