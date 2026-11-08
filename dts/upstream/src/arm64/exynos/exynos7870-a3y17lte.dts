@@ -98,15 +98,47 @@
 		#address-cells = <2>;
 		#size-cells = <1>;
 
+		/* Read back from U-Boot after a crash: "pstore display" */
 		ramoops@46e00000 {
 			compatible = "ramoops";
-			reg = <0x0 0x46e00000 0x8000>;
-			console-size = <0x4000>;
-			pmsg-size = <0x4000>;
+			reg = <0x0 0x46e00000 0x100000>;
+			record-size = <0x20000>;
+			console-size = <0x80000>;
+			pmsg-size = <0x10000>;
 		};
 
 		framebuffer@67000000 {
 			reg = <0x0 0x67000000 (720 * 1280 * 4)>;
+			no-map;
+		};
+
+		/*
+		 * Regions the stock firmware keeps away from Linux (from the
+		 * vendor reserved-memory layout). Some of them may be protected
+		 * by the secure world; touching those resets the board.
+		 */
+		tima@52a00000 {
+			reg = <0x0 0x52a00000 0x200000>;
+			no-map;
+		};
+
+		secure-ion@80000000 {
+			reg = <0x0 0x80000000 0x9400000>;
+			no-map;
+		};
+
+		mfc-fw@ae600000 {
+			reg = <0x0 0xae600000 0x400000>;
+			no-map;
+		};
+
+		cp-dram-init@affff000 {
+			reg = <0x0 0xaffff000 0x1000>;
+			no-map;
+		};
+
+		modem@b0000000 {
+			reg = <0x0 0xb0000000 0x8000000>;
 			no-map;
 		};
 	};
