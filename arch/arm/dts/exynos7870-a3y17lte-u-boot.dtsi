@@ -26,3 +26,8 @@
 		reg = <0x1 0x00000000 0x00000000>;
 	};
 };
+
+/* S2MU004 MUIC/charger (0x3d): its D+/D- switch must be routed for USB */
+&i2c4 {
+	status = "okay";
+};
