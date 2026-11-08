@@ -6,10 +6,14 @@
  */
 
 #include <asm/armv8/mmu.h>
+#include <asm/io.h>
+#include <linux/bitops.h>
 #include <blk.h>
 #include <bootflow.h>
 #include <ctype.h>
+#include <dm.h>
 #include <dm/ofnode.h>
+#include <i2c.h>
 #include <efi.h>
 #include <efi_loader.h>
 #include <env.h>
@@ -367,8 +371,101 @@ int dram_init_banksize(void)
 	return 0;
 }
 
+/*
+ * Some devices (e.g. Galaxy A3 2017) use a MIPI command-mode panel. S-BOOT
+ * pushes the boot splash once and leaves DECON without a trigger source, so
+ * nothing written to the framebuffer reaches the panel afterwards. Enable the
+ * hardware (TE) trigger with auto mask, which makes DECON refresh the panel
+ * on every TE pulse, as with a video-mode panel.
+ */
+#define EXYNOS7870_DECON_BASE			0x14830000UL
+#define DECON_VIDCON0				0x0000
+#define  DECON_VIDCON0_ENVID			BIT(1)
+#define  DECON_VIDCON0_ENVID_F			BIT(0)
+#define DECON_TRIGCON				0x06b0
+#define  DECON_TRIGCON_SAVE_DISABLE_SYNCMGR	BIT(13)
+#define  DECON_TRIGCON_HWTRIG_AUTO_MASK		BIT(6)
+#define  DECON_TRIGCON_HWTRIGMASK_DISPIF0	BIT(4)
+#define  DECON_TRIGCON_HWTRIGEN_I80_RGB		BIT(3)
+#define  DECON_TRIGCON_SWTRIGEN_I80_RGB		BIT(0)
+#define DECON_UPDATE				0x0710
+#define  DECON_UPDATE_STANDALONE_F		BIT(0)
+
+static void exynos7870_decon_enable_hw_trigger(void)
+{
+	void __iomem *base = (void __iomem *)EXYNOS7870_DECON_BASE;
+
+	clrsetbits_le32(base + DECON_TRIGCON, DECON_TRIGCON_SWTRIGEN_I80_RGB,
+			DECON_TRIGCON_HWTRIGEN_I80_RGB |
+			DECON_TRIGCON_HWTRIG_AUTO_MASK |
+			DECON_TRIGCON_SAVE_DISABLE_SYNCMGR |
+			DECON_TRIGCON_HWTRIGMASK_DISPIF0);
+	setbits_le32(base + DECON_VIDCON0,
+		     DECON_VIDCON0_ENVID | DECON_VIDCON0_ENVID_F);
+	setbits_le32(base + DECON_UPDATE, DECON_UPDATE_STANDALONE_F);
+}
+
+/*
+ * The Galaxy A3 2017 routes USB D+/D- through the analog switch of its
+ * S2MU004 MUIC, which the vendor kernel runs in manual mode. S-BOOT leaves the
+ * switch open on a normal boot, so the USB gadget is never seen by the host.
+ * Route D+/D- to the AP USB PHY.
+ */
+#define S2MU004_I2C_BUS_ADDR		0x13870000
+#define S2MU004_I2C_ADDR		0x3d
+#define S2MU004_REG_MUIC_ADC		0x61
+#define S2MU004_REG_MUIC_DEVICE_TYPE1	0x62
+#define S2MU004_REG_MUIC_CTRL1		0xc7
+#define  S2MU004_CTRL1_SWITCH_OPEN	BIT(4)	/* 1: switches follow SW_CTRL */
+#define  S2MU004_CTRL1_MANUAL_SW	BIT(2)	/* 0: manual switching */
+#define S2MU004_REG_MUIC_SW_CTRL	0xca
+#define  S2MU004_SW_CTRL_USB		(BIT(5) | BIT(2))	/* DM=USB, DP=USB */
+
+static void a3y17lte_muic_route_usb(void)
+{
+	struct udevice *bus, *chip;
+	int ctrl1, sw, ret;
+
+	for (ret = uclass_first_device_err(UCLASS_I2C, &bus); !ret;
+	     ret = uclass_next_device_err(&bus))
+		if (dev_read_addr(bus) == S2MU004_I2C_BUS_ADDR)
+			break;
+	if (ret) {
+		printf("MUIC: i2c bus @%x not found (%d)\n",
+		       S2MU004_I2C_BUS_ADDR, ret);
+		return;
+	}
+
+	ret = dm_i2c_probe(bus, S2MU004_I2C_ADDR, 0, &chip);
+	if (ret) {
+		printf("MUIC: s2mu004 not responding (%d)\n", ret);
+		return;
+	}
+
+	ctrl1 = dm_i2c_reg_read(chip, S2MU004_REG_MUIC_CTRL1);
+	sw = dm_i2c_reg_read(chip, S2MU004_REG_MUIC_SW_CTRL);
+	printf("MUIC: before ctrl1=%02x sw_ctrl=%02x adc=%02x dev1=%02x\n",
+	       ctrl1, sw, dm_i2c_reg_read(chip, S2MU004_REG_MUIC_ADC),
+	       dm_i2c_reg_read(chip, S2MU004_REG_MUIC_DEVICE_TYPE1));
+	if (ctrl1 < 0 || sw < 0)
+		return;
+
+	dm_i2c_reg_write(chip, S2MU004_REG_MUIC_SW_CTRL,
+			 (sw & 0x03) | S2MU004_SW_CTRL_USB);
+	dm_i2c_reg_write(chip, S2MU004_REG_MUIC_CTRL1,
+			 (ctrl1 | S2MU004_CTRL1_SWITCH_OPEN) &
+			 ~S2MU004_CTRL1_MANUAL_SW);
+
+	printf("MUIC: after  ctrl1=%02x sw_ctrl=%02x\n",
+	       dm_i2c_reg_read(chip, S2MU004_REG_MUIC_CTRL1),
+	       dm_i2c_reg_read(chip, S2MU004_REG_MUIC_SW_CTRL));
+}
+
 int board_init(void)
 {
+	if (ofnode_device_is_compatible(ofnode_root(), "samsung,a3y17lte"))
+		exynos7870_decon_enable_hw_trigger();
+
 	return 0;
 }
 
@@ -377,6 +474,9 @@ int misc_init_r(void)
 	int ret;
 
 	exynos_env_setup();
+
+	if (ofnode_device_is_compatible(ofnode_root(), "samsung,a3y17lte"))
+		a3y17lte_muic_route_usb();
 
 	ret = exynos_blk_env_setup();
 	if (ret)
