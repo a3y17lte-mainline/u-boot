@@ -298,6 +298,34 @@ static int exynos_fastboot_alias_setup(void)
 }
 #endif
 
+/* Load addresses for booting a kernel from storage (extlinux, booti). */
+static int exynos_addr_setup(void)
+{
+	static const struct {
+		const char *name;
+		phys_size_t size;
+	} regions[] = {
+		{ "kernel_addr_r",	SZ_128M },
+		{ "ramdisk_addr_r",	SZ_128M },
+		{ "fdt_addr_r",		SZ_2M },
+		{ "scriptaddr",		SZ_4M },
+		{ "pxefile_addr_r",	SZ_4M },
+	};
+	phys_addr_t addr;
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(regions); i++) {
+		if (lmb_alloc(regions[i].size, &addr)) {
+			log_err("%s: failed to allocate %s\n", __func__,
+				regions[i].name);
+			return -ENOMEM;
+		}
+		env_set_hex(regions[i].name, addr);
+	}
+
+	return 0;
+}
+
 static int exynos_fastboot_setup(void)
 {
 	phys_addr_t addr;
@@ -479,6 +507,10 @@ int misc_init_r(void)
 		a3y17lte_muic_route_usb();
 
 	ret = exynos_blk_env_setup();
+	if (ret)
+		return ret;
+
+	ret = exynos_addr_setup();
 	if (ret)
 		return ret;
 
